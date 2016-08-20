@@ -5,12 +5,13 @@ var split = require('./split'),
 program
   .version('0.0.1')
   .option('-p, --packagejson', 'Merge package.json automatically')
+  .option('-q, --quiver', 'Merge a Quiver note automatically')
+  // TODO: .option('-d, --directory', 'The directory to look in')
   .parse(process.argv);
 
 if (program.packagejson) {
-	var versions = split(fs.readFileSync('package.json').toString())
-			.map(function (json) { return JSON.parse(json); });
-	var dependencies = popProp(versions, 'dependencies'),
+	var versions = splitJson('package.json'),
+		dependencies = popProp(versions, 'dependencies'),
 		devDependencies = popProp(versions, 'devDependencies');
 	mustEqual(versions[0], versions[1]);
 	var base = versions[0];
@@ -33,6 +34,107 @@ if (program.packagejson) {
 		else base.devDependencies[key] = getBestVersion(devDependencies[0][key], devDependencies[1][key]);
 	});
 	fs.writeFileSync('package.json', JSON.stringify(base, null, 2));
+}
+
+if (program.quiver) {
+	// meta.json
+	var versions = splitJson('meta.json'),
+		merged = applyMergers(versions, {
+			created_at: Math.min,
+			tags: union,
+			title: separateWith('/'),
+			updated_at: Math.max,
+			uuid: expectMatch
+		});
+	fs.writeFileSync('meta.json',
+		JSON.stringify(merged, null, 2));
+
+	// content.json
+	versions = splitJson('content.json');
+	merged = {
+		title: merged.title,
+		cells: []
+	};
+	var inBoth = intersection.apply(this,
+		versions.map(function(v) {
+			return v.cells.map(function(c) {
+				return c.data;
+			});
+		})),
+		seenInBoth = {},
+		i = [ 0, 0 ],
+		current = 0;
+	while (true) {
+		if (i[0] >= versions[0].cells.length &&
+			i[1] >= versions[1].cells.length)
+			break;
+		var currentCell = versions[current].cells[i[current]++];
+		if (!currentCell) {
+			current =+! current;
+			continue;
+		}
+		var currentData = currentCell.data;
+		if (inBoth.indexOf(currentData) >= 0) {
+			// This cell is not conflicted (as far as we care)
+			if (seenInBoth[currentData])
+				// We've skipped this cell once; it is time to bring it in.
+				merged.cells.push(currentCell);
+			else {
+				// This cell is in both and this is the first time we've seen it. Switch to the other version and we'll pull it in from there when we hit it.
+				seenInBoth[currentData] = true;
+				current =+! current;
+			}
+		} else
+			merged.cells.push(currentCell);
+	}
+	fs.writeFileSync('content.json',
+		JSON.stringify(merged, null, 2));
+}
+
+function splitJson(fn) {
+	return split(fs.readFileSync(fn).toString())
+			.map(function (json) { return JSON.parse(json); });
+}
+
+function applyMergers(versions, mergers) {
+	var merged = {};
+	for (var key in mergers)
+		merged[key] = mergers[key](
+			versions[0][key], versions[1][key]);
+	return merged;
+}
+
+function separateWith(separator) {
+	return function(a, b) {
+		if (a == b)
+			return a;
+		return a + separator + b;
+	}
+}
+
+function union(a, b) {
+	var merged = {};
+	a.forEach(function(k) {
+		merged[k] = true;
+	});
+	b.forEach(function(k) {
+		merged[k] = true;
+	});
+	return Object.keys(merged);
+}
+
+function intersection(a, b) {
+	var merged = {};
+	a.forEach(function(k) {
+		if (b.indexOf(k) >= 0)
+			merged[k] = true;
+	});
+	return Object.keys(merged);
+}
+
+function expectMatch(a, b) {
+	mustEqual(a, b);
+	return a;
 }
 
 function getBestVersion(a, b) {
